@@ -1,4 +1,5 @@
-streamlit
-google-generativeai
-pandas
 python-dotenv
+streamlit
+google-generativeai>=0.8.3
+pandas
+typing_extensions
