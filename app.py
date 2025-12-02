@@ -45,13 +45,10 @@ def get_available_models():
     try:
         models = []
         for m in genai.list_models():
-            # Filter for models that support content generation
             if 'generateContent' in m.supported_generation_methods:
-                # Strip 'models/' prefix if present for cleaner UI, 
-                # though the API accepts it either way.
                 name = m.name.replace("models/", "")
                 models.append(name)
-        return sorted(models, reverse=True) # Sort to likely put newer versions (higher numbers) near top
+        return sorted(models, reverse=True) 
     except Exception as e:
         return [f"Error fetching models: {e}"]
 
@@ -92,33 +89,48 @@ def upload_to_gemini(uploaded_file):
 def run_audit(video_file, script_content, model_id):
     """Runs the forensic audit using the selected model."""
     
+    # Adjust prompt logic based on whether script is present
+    if script_content and len(script_content.strip()) > 10:
+        context_block = f"1. **Approved Script:** {script_content}"
+        script_instruction = "1. **Strict Script Fidelity:** Compare spoken audio to the provided script. Flag skipped lines, ad-libs, or deviations."
+    else:
+        context_block = "1. **Approved Script:** NOT PROVIDED (Perform Blind Audit)"
+        script_instruction = "1. **Narrative & Audio Logic:** Since no script is provided, check for logical flow, sentence fragments, and awkward cuts in the voiceover."
+
     model = genai.GenerativeModel(
         model_name=model_id,
         generation_config={
             "response_mime_type": "application/json",
             "response_schema": list[AuditIssue],
-            "temperature": 0.1, # Low temp for strict factual adherence
+            "temperature": 0.1, 
         }
     )
 
     prompt = f"""
-    You are a Senior Video Quality Assurance (QA) Auditor. Your auditing style is forensic.
+    You are a Senior Video Quality Assurance (QA) Auditor. Your auditing style is forensic and highly granular.
     
     OBJECTIVE:
-    Conduct a minute-by-minute audit of the video against the provided script. catch every visual, audio, factual, or compliance error.
+    Analyze the video timeline strictly. Provide a dense log of issues with precise timestamps.
+    You are looking for "glitch-level" details, single-frame errors, and specific audio anomalies.
 
     INPUT CONTEXT:
-    1. **Approved Script:** {script_content}
+    {context_block}
 
     AUDIT PARAMETERS (The Forensic Checklist):
-    1. **Strict Script Fidelity:** Flag skipped lines, ad-libs, or placeholder text (gibberish).
-    2. **Factual Integrity:** CRITICAL. Verify all numbers (GST rates, Tax slabs, Stats). If video says "4% GST" but reality is 5% or 18%, flag as CRITICAL MISINFORMATION.
-    3. **Visual Forensics:** Check text legibility (contrast), prop continuity, and PII leaks on phone screens (Names/Numbers).
-    4. **Compliance:** Ensure parody brands (e.g., "Bomato") don't violate trade dress.
-    5. **Audio:** Check mix levels and lip sync.
+    {script_instruction}
+    2. **Factual Integrity (CRITICAL):** Verify EVERY number, statistic, and legal claim (especially GST rates, Tax slabs) against real-world facts (Indian Context). Flag misinformation immediately.
+    3. **Visual Forensics:** - Check for "Flash Frames" (black frames/glitches).
+       - Check Text Legibility (contrast issues, spelling errors).
+       - Zoom in on Phone Screens for PII (Names/Numbers) - this is Critical.
+       - Check for Prop Continuity errors.
+    4. **Audio Engineering:** - Flag sudden volume jumps or drops.
+       - Flag background music overpowering speech.
+       - Flag unsynced lip movement.
 
     OUTPUT INSTRUCTION:
-    Analyze the entire video. Return a JSON list of issues found.
+    - Do not summarize. List individual instances.
+    - If a specific visual glitch happens at 00:04 and another at 00:05, list them as separate rows.
+    - Return a JSON list of issues.
     """
 
     # Increased timeout to 10 minutes for long videos
@@ -129,7 +141,6 @@ def run_audit(video_file, script_content, model_id):
 with st.sidebar:
     st.header("⚙️ Model Configuration")
     
-    # Initialize session state for models if not present
     if "available_models" not in st.session_state:
         st.session_state.available_models = [
             "gemini-1.5-pro",
@@ -138,12 +149,10 @@ with st.sidebar:
             "Custom Input"
         ]
 
-    # Button to fetch real-time models
     if st.button("🔄 Fetch All Available Models", help="Click to update the dropdown with all models your API key can access"):
         with st.spinner("Querying Google API for models..."):
             fetched = get_available_models()
             if fetched and not fetched[0].startswith("Error"):
-                # Add Custom Input option
                 if "Custom Input" not in fetched:
                     fetched.append("Custom Input")
                 st.session_state.available_models = fetched
@@ -151,7 +160,6 @@ with st.sidebar:
             else:
                 st.error("Could not fetch models.")
 
-    # Dropdown uses the session state list
     selection = st.selectbox("Select AI Model", st.session_state.available_models, index=0)
     
     if selection == "Custom Input":
@@ -163,7 +171,7 @@ with st.sidebar:
 
 # --- Main UI ---
 st.title("🕵️‍♂️ AI Video QA Auditor")
-st.markdown("Upload your video and script to generate a forensic QA log.")
+st.markdown("Upload your video to generate a forensic QA log. Script is optional but recommended.")
 
 col1, col2 = st.columns([1, 1], gap="medium")
 
@@ -171,21 +179,22 @@ with col1:
     st.subheader("1. Upload Assets")
     video_upload = st.file_uploader("Upload Video (MP4/MOV)", type=["mp4", "mov"])
     
-    tab1, tab2 = st.tabs(["Paste Script", "Upload Script"])
-    script_text = ""
-    
-    with tab1:
-        script_text_paste = st.text_area("Paste Approved Script here", height=250)
-    with tab2:
-        script_file = st.file_uploader("Upload Script file", type=["txt", "md", "srt"])
-    
-    # Logic to prioritize file over paste if both exist
-    if script_file:
-        script_text = script_file.read().decode("utf-8")
-    elif script_text_paste:
-        script_text = script_text_paste
+    # Script is now purely optional UI
+    with st.expander("📝 Optional: Add Script for comparison"):
+        tab1, tab2 = st.tabs(["Paste Script", "Upload Script"])
+        script_text = ""
+        with tab1:
+            script_text_paste = st.text_area("Paste Approved Script here", height=150)
+        with tab2:
+            script_file = st.file_uploader("Upload Script file", type=["txt", "md", "srt"])
+        
+        if script_file:
+            script_text = script_file.read().decode("utf-8")
+        elif script_text_paste:
+            script_text = script_text_paste
 
-    start_audit = st.button("🚀 Run Forensic Audit", type="primary", use_container_width=True, disabled=not (video_upload and script_text))
+    # Button enabled if Video is present (Script not required)
+    start_audit = st.button("🚀 Run Forensic Audit", type="primary", use_container_width=True, disabled=not video_upload)
 
 with col2:
     st.subheader("2. Audit Results")
@@ -202,7 +211,7 @@ with col2:
             
             if gemini_video:
                 # 2. Audit
-                with st.spinner(f"🧠 {selected_model} is analyzing content..."):
+                with st.spinner(f"🧠 {selected_model} is analyzing content frame-by-frame..."):
                     try:
                         json_result = run_audit(gemini_video, script_text, selected_model)
                         data = json.loads(json_result)
@@ -252,4 +261,4 @@ with col2:
     elif st.session_state.audit_df is not None:
         st.success("✅ Clean Audit. No issues found.")
     else:
-        st.info("Waiting for input...")
+        st.info("Waiting for video input...")
