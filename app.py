@@ -1,183 +1,189 @@
 import streamlit as st
 import google.generativeai as genai
-import time
 import pandas as pd
-import json
+import time
 import os
-from io import StringIO
+import tempfile
+import json
+import typing_extensions as typing
 
-# --- Page Config ---
-st.set_page_config(page_title="Video QA Auditor AI", page_icon="🎬", layout="wide")
+# --- Configuration ---
+st.set_page_config(page_title="Forensic Video QA Auditor", page_icon="🕵️‍♂️", layout="wide")
 
-# --- Sidebar: Configuration ---
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    api_key = st.text_input("Enter Gemini API Key", type="password")
-    st.markdown("---")
-    st.info("💡 **Note:** Uploading large videos may take time depending on your internet speed.")
-    st.markdown("[Get API Key](https://aistudio.google.com/app/apikey)")
+# --- CSS for styling ---
+st.markdown("""
+<style>
+    .reportview-container {
+        margin-top: -2em;
+    }
+    .stDeployButton {display:none;}
+    footer {visibility: hidden;}
+    #MainMenu {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
+
+# --- Secrets Management ---
+# Safely access API key from .streamlit/secrets.toml
+try:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+except (FileNotFoundError, KeyError):
+    st.error("Please set your GEMINI_API_KEY in .streamlit/secrets.toml")
+    st.stop()
+
+genai.configure(api_key=API_KEY)
+
+# --- Define Output Schema (Structured Output) ---
+# This ensures the API returns JSON exactly matching this structure
+class AuditIssue(typing.TypedDict):
+    timestamp: str
+    severity: str
+    category: str
+    issue_description: str
+    suggested_fix: str
 
 # --- Helper Functions ---
-def wait_for_files_active(files):
-    """Waits for the uploaded video to be processed by Gemini."""
-    print("Waiting for file processing...")
-    bar = st.progress(0, text="Processing video on Gemini server...")
-    for name in (file.name for file in files):
-        file_obj = genai.get_file(name)
-        while file_obj.state.name == "PROCESSING":
-            time.sleep(2)  # Polling interval
-            file_obj = genai.get_file(name)
-        if file_obj.state.name != "ACTIVE":
-            st.error(f"File {file_obj.name} failed to process.")
-            return False
-    bar.progress(100, text="Video processed and ready!")
-    time.sleep(0.5)
-    bar.empty()
-    return True
 
-def analyze_video(video_file, script_content, api_key):
-    """Uploads video and script to Gemini and requests JSON analysis."""
-    genai.configure(api_key=api_key)
-    
-    # 1. Upload Video to Gemini
-    with st.spinner(f"Uploading {video_file.name} to Gemini..."):
-        # Create a temporary file to handle the stream
-        temp_filename = "temp_video.mp4"
-        with open(temp_filename, "wb") as f:
-            f.write(video_file.getbuffer())
+def upload_to_gemini(uploaded_file):
+    """Writes bytes to temp file and uploads to Gemini."""
+    with st.spinner(f"Processing video: {uploaded_file.name}..."):
+        # Create a temporary file
+        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) 
+        tfile.write(uploaded_file.read())
+        tfile.close()
+
+        # Upload to Gemini
+        gemini_file = genai.upload_file(tfile.name, mime_type="video/mp4")
         
-        # Upload using the path
-        gemini_file = genai.upload_file(path=temp_filename, display_name=video_file.name)
+        # Poll for processing completion
+        while gemini_file.state.name == "PROCESSING":
+            time.sleep(2)
+            gemini_file = genai.get_file(gemini_file.name)
         
-        # Verify state
-        if not wait_for_files_active([gemini_file]):
+        if gemini_file.state.name == "FAILED":
+            st.error("Video processing failed on Google's server.")
             return None
 
-    # 2. Define the Prompt
-    # We enforce specific JSON structure for dataframe compatibility
-    system_prompt = """
-    Role: You are a Senior Video Quality Assurance (QA) Auditor.
-    Task: Audit the provided video against the provided script/ground truth.
+        # Clean up local temp file
+        os.unlink(tfile.name)
+        return gemini_file
+
+def run_audit(video_file, script_content):
+    """Runs the QA prompts against the video and script."""
     
-    You must check for:
-    1. Visual Integrity (Spelling, Text Safety, Glitches, B-roll relevance).
-    2. Audio & Pacing (Lip Sync, Levels, Pronunciation, Dead Air).
-    3. Factual Accuracy (Compare spoken audio verbatim to script, check data visuals).
-    4. Compliance (PII, Watermarks).
-
-    Output Format:
-    Return ONLY a JSON array of objects. Each object must have these keys:
-    - "timestamp": string (e.g., "01:23")
-    - "severity": string ("Critical", "Major", "Minor", "Pass")
-    - "category": string ("Visual", "Audio", "Fact", "Spelling", "Compliance")
-    - "issue_description": string (Description of what is wrong, or "No errors found" if strictly requested)
-    - "suggested_fix": string (Actionable advice)
-    """
-
-    user_prompt = f"""
-    Here is the APPROVED SCRIPT and GROUND TRUTH data:
-    {script_content}
-
-    Please analyze the video provided strictly against this text.
-    """
-
-    # 3. Generate Content
-    # We use gemini-1.5-pro for best video reasoning capabilities
+    # We use Flash for speed/cost, or Pro for deeper reasoning. 
+    # Flash 1.5 is excellent for video analysis.
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-pro",
-        generation_config={"response_mime_type": "application/json"}
+        model_name="gemini-1.5-flash",
+        generation_config={
+            "response_mime_type": "application/json",
+            "response_schema": list[AuditIssue] # Enforce list of objects
+        }
     )
 
-    with st.spinner("AI is watching the video and auditing against the script..."):
-        response = model.generate_content([gemini_file, system_prompt, user_prompt])
+    # The Master Prompt
+    prompt = f"""
+    You are a Senior Video Quality Assurance (QA) Auditor. Your auditing style is forensic.
     
-    # Clean up local file
-    if os.path.exists(temp_filename):
-        os.remove(temp_filename)
-        
-    return response.text
+    OBJECTIVE:
+    Conduct a minute-by-minute audit of the video against the provided script. catch every visual, audio, factual, or compliance error.
 
-# --- Main Interface ---
-st.title("🎬 AI Video Quality Assurance (QA) Tool")
-st.markdown("""
-Upload your video and your script/truth-doc. The AI will watch the video, read the script, 
-and generate a **detailed QA report** highlighting errors in spelling, facts, audio, and visuals.
-""")
+    INPUT CONTEXT:
+    1. **Approved Script:** {script_content}
+
+    AUDIT PARAMETERS (The Forensic Checklist):
+    1. **Strict Script Fidelity:** Flag skipped lines, ad-libs, or placeholder text (gibberish).
+    2. **Factual Integrity:** CRITICAL. Verify all numbers (GST rates, Tax slabs, Stats). If video says "4% GST" but reality is 5% or 18%, flag as CRITICAL MISINFORMATION.
+    3. **Visual Forensics:** Check text legibility (contrast), prop continuity, and PII leaks on phone screens (Names/Numbers).
+    4. **Compliance:** Ensure parody brands (e.g., "Bomato") don't violate trade dress.
+    5. **Audio:** Check mix levels and lip sync.
+
+    OUTPUT INSTRUCTION:
+    Analyze the entire video. Return a JSON list of issues found.
+    """
+
+    with st.spinner("🤖 AI Auditor is analyzing every frame... this may take a moment."):
+        response = model.generate_content([video_file, prompt])
+        return response.text
+
+# --- Main UI ---
+
+st.title("🕵️‍♂️ AI Video QA Auditor")
+st.markdown("Upload your video and the approved script to generate a forensic QA log.")
 
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    uploaded_video = st.file_uploader("1️⃣ Upload Video (MP4, MOV)", type=["mp4", "mov", "avi"])
+    st.subheader("1. Upload Assets")
+    video_upload = st.file_uploader("Upload Video (MP4)", type=["mp4", "mov"])
+    
+    script_mode = st.radio("Script Input Method:", ["Paste Text", "Upload Text/SRT File"])
+    
+    script_text = ""
+    if script_mode == "Paste Text":
+        script_text = st.text_area("Paste Approved Script/Context here", height=200)
+    else:
+        script_file = st.file_uploader("Upload Script", type=["txt", "md", "srt"])
+        if script_file:
+            script_text = script_file.read().decode("utf-8")
+
+    analyze_btn = st.button("Run Forensic Audit", type="primary", disabled=not (video_upload and script_text))
 
 with col2:
-    uploaded_script = st.file_uploader("2️⃣ Upload Script/Doc (TXT, MD)", type=["txt", "md"])
-
-# Initialize session state for results
-if "qa_results" not in st.session_state:
-    st.session_state.qa_results = None
-
-# --- Execution ---
-if st.button("🚀 Run QA Analysis", type="primary"):
-    if not api_key:
-        st.error("Please enter your Gemini API Key in the sidebar.")
-    elif not uploaded_video or not uploaded_script:
-        st.error("Please upload both a video file and a script file.")
-    else:
-        # Decode script
-        try:
-            stringio = StringIO(uploaded_script.getvalue().decode("utf-8"))
-            script_text = stringio.read()
-            
-            # Run Analysis
-            json_response = analyze_video(uploaded_video, script_text, api_key)
-            
-            if json_response:
-                try:
-                    data = json.loads(json_response)
-                    st.session_state.qa_results = data
-                except json.JSONDecodeError:
-                    st.error("Failed to parse AI response. Raw output provided below.")
-                    st.text(json_response)
-        except Exception as e:
-            st.error(f"An error occurred: {e}")
-
-# --- Results Display ---
-if st.session_state.qa_results:
-    st.divider()
-    st.subheader("📋 QA Audit Report")
+    st.subheader("2. Audit Results")
     
-    # Convert to DataFrame
-    df = pd.DataFrame(st.session_state.qa_results)
-    
-    # Styling the dataframe for better readability
-    def highlight_severity(val):
-        color = 'white'
-        if val == 'Critical': color = '#ff4b4b' # Red
-        elif val == 'Major': color = '#ffa421'  # Orange
-        elif val == 'Minor': color = '#ffe169'  # Yellow
-        elif val == 'Pass': color = '#21c354'   # Green
-        return f'background-color: {color}; color: black'
+    if "audit_data" not in st.session_state:
+        st.session_state.audit_data = None
 
-    if not df.empty:
-        # Reorder columns if needed
-        cols = ["timestamp", "severity", "category", "issue_description", "suggested_fix"]
-        # Ensure columns exist before selecting
-        existing_cols = [c for c in cols if c in df.columns]
-        df = df[existing_cols]
+    if analyze_btn:
+        # 1. Upload Video
+        gemini_video = upload_to_gemini(video_upload)
+        
+        if gemini_video:
+            # 2. Analyze
+            try:
+                json_result = run_audit(gemini_video, script_text)
+                data = json.loads(json_result)
+                st.session_state.audit_data = pd.DataFrame(data)
+                
+                # Cleanup Gemini file to save storage limit
+                genai.delete_file(gemini_video.name)
+                
+            except Exception as e:
+                st.error(f"An error occurred during analysis: {e}")
+
+    # Display Results
+    if st.session_state.audit_data is not None:
+        df = st.session_state.audit_data
+        
+        # Severity Color Highlight
+        def highlight_severity(val):
+            color = ''
+            if 'Critical' in val or 'CRITICAL' in val:
+                color = 'background-color: #ffcccc; color: #990000; font-weight: bold;'
+            elif 'Major' in val or 'MAJOR' in val:
+                color = 'background-color: #fff4cc; color: #664400;'
+            return color
 
         st.dataframe(
-            df.style.applymap(highlight_severity, subset=['severity']),
+            df.style.map(highlight_severity, subset=['severity']),
             use_container_width=True,
-            hide_index=True
+            column_config={
+                "timestamp": "Time",
+                "severity": "Severity",
+                "category": "Category",
+                "issue_description": "Issue",
+                "suggested_fix": "Suggested Fix"
+            }
         )
-        
-        # CSV Download
+
+        # Download Button
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label="📥 Download Report as CSV",
-            data=csv,
-            file_name="qa_audit_report.csv",
-            mime="text/csv",
+            "Download QA Report (CSV)",
+            csv,
+            "QA_Audit_Log.csv",
+            "text/csv",
+            key='download-csv'
         )
     else:
-        st.success("Analysis complete. No structural errors found based on JSON output.")
+        st.info("Upload files and click 'Run Forensic Audit' to see results.")
