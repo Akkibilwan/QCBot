@@ -1,5 +1,5 @@
 python-dotenv
 streamlit
-google-generativeai>=0.9.0
+google-generativeai
 pandas
 typing_extensions
