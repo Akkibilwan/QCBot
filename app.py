@@ -45,9 +45,13 @@ def get_available_models():
     try:
         models = []
         for m in genai.list_models():
+            # Filter for models that support content generation
             if 'generateContent' in m.supported_generation_methods:
-                models.append(m.name)
-        return sorted(models)
+                # Strip 'models/' prefix if present for cleaner UI, 
+                # though the API accepts it either way.
+                name = m.name.replace("models/", "")
+                models.append(name)
+        return sorted(models, reverse=True) # Sort to likely put newer versions (higher numbers) near top
     except Exception as e:
         return [f"Error fetching models: {e}"]
 
@@ -125,30 +129,37 @@ def run_audit(video_file, script_content, model_id):
 with st.sidebar:
     st.header("⚙️ Model Configuration")
     
-    # Pre-defined list of high-performance models
-    model_options = [
-        "gemini-1.5-pro-002",    # Latest Stable Pro
-        "gemini-1.5-flash-002",  # Latest Stable Flash
-        "gemini-1.5-pro",        # Legacy Pro
-        "gemini-1.5-flash",      # Legacy Flash
-        "gemini-exp-1121",       # Experimental (Check availability)
-        "Custom Input"           # Future proofing
-    ]
-    
-    selection = st.selectbox("Select AI Model", model_options, index=0)
+    # Initialize session state for models if not present
+    if "available_models" not in st.session_state:
+        st.session_state.available_models = [
+            "gemini-1.5-pro",
+            "gemini-1.5-flash",
+            "gemini-2.0-flash-exp",
+            "Custom Input"
+        ]
+
+    # Button to fetch real-time models
+    if st.button("🔄 Fetch All Available Models", help="Click to update the dropdown with all models your API key can access"):
+        with st.spinner("Querying Google API for models..."):
+            fetched = get_available_models()
+            if fetched and not fetched[0].startswith("Error"):
+                # Add Custom Input option
+                if "Custom Input" not in fetched:
+                    fetched.append("Custom Input")
+                st.session_state.available_models = fetched
+                st.success(f"Found {len(fetched)-1} models!")
+            else:
+                st.error("Could not fetch models.")
+
+    # Dropdown uses the session state list
+    selection = st.selectbox("Select AI Model", st.session_state.available_models, index=0)
     
     if selection == "Custom Input":
-        selected_model = st.text_input("Enter Model ID (e.g., gemini-3.0-pro)", "gemini-1.5-pro-002")
+        selected_model = st.text_input("Enter Model ID (e.g., gemini-3.0-pro)", "gemini-1.5-pro")
     else:
         selected_model = selection
         
-    st.info(f"Active Model: `{selected_model}`")
-    
-    with st.expander("🛠️ Debug: List My Models"):
-        if st.button("Fetch Available Models"):
-            with st.spinner("Fetching..."):
-                available = get_available_models()
-                st.code("\n".join(available), language="text")
+    st.caption(f"Active Model ID: `{selected_model}`")
 
 # --- Main UI ---
 st.title("🕵️‍♂️ AI Video QA Auditor")
