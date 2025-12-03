@@ -89,13 +89,8 @@ def upload_to_gemini(uploaded_file):
 def run_audit(video_file, script_content, model_id):
     """Runs the forensic audit using the selected model."""
     
-    # Adjust prompt logic based on whether script is present
-    if script_content and len(script_content.strip()) > 10:
-        context_block = f"1. **Approved Script:** {script_content}"
-        script_instruction = "1. **Strict Script Fidelity:** Compare spoken audio to the provided script. Flag skipped lines, ad-libs, or deviations."
-    else:
-        context_block = "1. **Approved Script:** NOT PROVIDED (Perform Blind Audit)"
-        script_instruction = "1. **Narrative & Audio Logic:** Since no script is provided, check for logical flow, sentence fragments, and awkward cuts in the voiceover."
+    # Handle missing script gracefully within the strict prompt structure
+    script_text_to_inject = script_content if script_content and len(script_content.strip()) > 10 else "NOT PROVIDED (Perform Blind Audit based on visual/audio logic)"
 
     model = genai.GenerativeModel(
         model_name=model_id,
@@ -106,31 +101,46 @@ def run_audit(video_file, script_content, model_id):
         }
     )
 
+    # --- THE UPDATED FORENSIC PROMPT ---
     prompt = f"""
-    You are a Senior Video Quality Assurance (QA) Auditor. Your auditing style is forensic and highly granular.
+    Role: You are a Senior Video Quality Assurance (QA) Auditor for a premium broadcast production house. Your auditing style is forensic, strict, and detail-oriented. You do not skim; you analyze every frame, audio cue, and data point against the provided "Ground Truth" (Script & Fact Sheet).
     
-    OBJECTIVE:
-    Analyze the video timeline strictly. Provide a dense log of issues with precise timestamps.
-    You are looking for "glitch-level" details, single-frame errors, and specific audio anomalies.
-
-    INPUT CONTEXT:
-    {context_block}
-
-    AUDIT PARAMETERS (The Forensic Checklist):
-    {script_instruction}
-    2. **Factual Integrity (CRITICAL):** Verify EVERY number, statistic, and legal claim (especially GST rates, Tax slabs) against real-world facts (Indian Context). Flag misinformation immediately.
-    3. **Visual Forensics:** - Check for "Flash Frames" (black frames/glitches).
-       - Check Text Legibility (contrast issues, spelling errors).
-       - Zoom in on Phone Screens for PII (Names/Numbers) - this is Critical.
-       - Check for Prop Continuity errors.
-    4. **Audio Engineering:** - Flag sudden volume jumps or drops.
-       - Flag background music overpowering speech.
-       - Flag unsynced lip movement.
-
-    OUTPUT INSTRUCTION:
-    - Do not summarize. List individual instances.
-    - If a specific visual glitch happens at 00:04 and another at 00:05, list them as separate rows.
-    - Return a JSON list of issues.
+    Objective: Conduct a minute-by-minute audit of the uploaded video file. Your goal is to catch every error—visual, audio, factual, or compliance-related—before the video goes to final export.
+    
+    Input Data Required:
+    - The Video File: (Uploaded)
+    - The Approved Script: {script_text_to_inject}
+    - Key Facts/Data: General Indian Context (Use real-world Indian GST Laws, Tax Slabs, and ICMR Guidelines).
+    
+    The "Forensic" Checklist (Audit Parameters):
+    
+    1. STRICT SCRIPT FIDELITY & DEVIATIONS
+    - Verbatim Check: Compare spoken dialogue against the script. Flag any skipped lines, ad-libs, or missing segments (e.g., skipped scenes).
+    - Placeholder Detection: Flag if the script contains placeholder text (e.g., "lorem ipsum" or gibberish) but the video has actual dialogue.
+    - Ending/Structure: Ensure the video ends exactly as scripted. If the script calls for a "Call to Action" (CTA) and the video ends with a skit/blooper instead, flag it as a Major Deviation.
+    
+    2. FACTUAL INTEGRITY & REAL-WORLD LOGIC
+    - Data Validation (CRITICAL): Verify all numbers, percentages, and financial claims (e.g., GST rates, Tax slabs) against Real-World Laws (specifically Indian context).
+    - Example: If the video says "4% GST" but the real tax slab is 5% or 18%, flag this as CRITICAL MISINFORMATION, even if the script is vague.
+    - Grammage & Science: Check if visual data (e.g., "50g protein") aligns with the spoken narration or cited sources (e.g., ICMR guidelines).
+    
+    3. VISUAL FORENSICS & BRANDING
+    - Text Legibility: strict check on all on-screen text. Is there sufficient contrast? (e.g., White text on a light background). Note: Be precise. Do not flag if the text is on a dark colored pill/shape.
+    - Prop Logic & Continuity: Watch for objects appearing out of nowhere (e.g., an egg appearing in hand without an establishing "taking out of pocket" shot).
+    - Branding & Parody: If the video uses parody brands (e.g., "Bomato" instead of "Zomato"), ensure the Trade Dress (colors, UI layout) isn't identical to the real brand to avoid legal risk.
+    
+    4. COMPLIANCE & PRIVACY (PII)
+    - Screen Inspections (CRITICAL): Pause and zoom in on every shot featuring a phone or computer screen.
+    - Check for visible PII (Personally Identifiable Information): Real names, phone numbers, email addresses, or delivery locations.
+    - Action: If found, strict instruction to BLUR.
+    
+    5. AUDIO & PACING
+    - Mix Levels: Ensure background music does not drown out the Voiceover (VO), especially during "reveal" or "cheering" moments.
+    - Lip Sync: Verify audio matches speaker mouth movement.
+    
+    Output Format:
+    Please present your findings in a structured JSON list format using these keys: 
+    timestamp, severity (Critical/Major/Minor), category, issue_description, suggested_fix.
     """
 
     # Increased timeout to 10 minutes for long videos
@@ -143,6 +153,8 @@ with st.sidebar:
     
     if "available_models" not in st.session_state:
         st.session_state.available_models = [
+            "gemini-2.5-pro-preview-03-25", # High IQ
+            "gemini-2.5-flash",             # High Speed
             "gemini-1.5-pro",
             "gemini-1.5-flash",
             "gemini-2.0-flash-exp",
@@ -223,7 +235,12 @@ with col2:
                         
                     except Exception as e:
                         st.error(f"Analysis Error: {e}")
-                        st.warning("If you see a 404, the selected model might not be available to your account yet. Try 'gemini-1.5-flash'.")
+                        
+                        # Friendly Error Handling for 429
+                        if "429" in str(e):
+                             st.error("⚠️ Rate Limit Exceeded: The selected model is busy. Please switch to 'gemini-2.5-flash' in the sidebar for higher quota.")
+                        elif "404" in str(e):
+                             st.warning("⚠️ Model Not Found: Your API Key might not have access to this specific experimental model. Try 'gemini-1.5-flash'.")
 
     # Display Data
     if st.session_state.audit_df is not None and not st.session_state.audit_df.empty:
