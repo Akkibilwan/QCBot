@@ -89,7 +89,7 @@ def upload_to_gemini(uploaded_file):
 def run_audit(video_file, script_content, model_id):
     """Runs the forensic audit using the selected model."""
     
-    # Handle missing script gracefully within the strict prompt structure
+    # Handle missing script gracefully
     script_text_to_inject = script_content if script_content and len(script_content.strip()) > 10 else "NOT PROVIDED (Perform Blind Audit based on visual/audio logic)"
 
     model = genai.GenerativeModel(
@@ -101,7 +101,7 @@ def run_audit(video_file, script_content, model_id):
         }
     )
 
-    # --- THE UPDATED FORENSIC PROMPT ---
+    # --- THE FORENSIC PROMPT ---
     prompt = f"""
     Role: You are a Senior Video Quality Assurance (QA) Auditor for a premium broadcast production house. Your auditing style is forensic, strict, and detail-oriented. You do not skim; you analyze every frame, audio cue, and data point against the provided "Ground Truth" (Script & Fact Sheet).
     
@@ -115,27 +115,27 @@ def run_audit(video_file, script_content, model_id):
     The "Forensic" Checklist (Audit Parameters):
     
     1. STRICT SCRIPT FIDELITY & DEVIATIONS
-    - Verbatim Check: Compare spoken dialogue against the script. Flag any skipped lines, ad-libs, or missing segments (e.g., skipped scenes).
-    - Placeholder Detection: Flag if the script contains placeholder text (e.g., "lorem ipsum" or gibberish) but the video has actual dialogue.
-    - Ending/Structure: Ensure the video ends exactly as scripted. If the script calls for a "Call to Action" (CTA) and the video ends with a skit/blooper instead, flag it as a Major Deviation.
+    - Verbatim Check: Compare spoken dialogue against the script. Flag any skipped lines, ad-libs, or missing segments.
+    - Placeholder Detection: Flag if the script contains placeholder text (gibberish) but video has dialogue.
+    - Ending/Structure: Ensure the video ends exactly as scripted.
     
     2. FACTUAL INTEGRITY & REAL-WORLD LOGIC
     - Data Validation (CRITICAL): Verify all numbers, percentages, and financial claims (e.g., GST rates, Tax slabs) against Real-World Laws (specifically Indian context).
-    - Example: If the video says "4% GST" but the real tax slab is 5% or 18%, flag this as CRITICAL MISINFORMATION, even if the script is vague.
-    - Grammage & Science: Check if visual data (e.g., "50g protein") aligns with the spoken narration or cited sources (e.g., ICMR guidelines).
+    - Example: If the video says "4% GST" but the real tax slab is 5% or 18%, flag this as CRITICAL MISINFORMATION.
+    - Grammage & Science: Check if visual data (e.g., "50g protein") aligns with the spoken narration or cited sources.
     
     3. VISUAL FORENSICS & BRANDING
-    - Text Legibility: strict check on all on-screen text. Is there sufficient contrast? (e.g., White text on a light background). Note: Be precise. Do not flag if the text is on a dark colored pill/shape.
-    - Prop Logic & Continuity: Watch for objects appearing out of nowhere (e.g., an egg appearing in hand without an establishing "taking out of pocket" shot).
-    - Branding & Parody: If the video uses parody brands (e.g., "Bomato" instead of "Zomato"), ensure the Trade Dress (colors, UI layout) isn't identical to the real brand to avoid legal risk.
+    - Text Legibility: strict check on all on-screen text. Is there sufficient contrast?
+    - Prop Logic & Continuity: Watch for objects appearing out of nowhere.
+    - Branding & Parody: Ensure parody brands (e.g., "Bomato") don't violate Trade Dress laws.
     
     4. COMPLIANCE & PRIVACY (PII)
-    - Screen Inspections (CRITICAL): Pause and zoom in on every shot featuring a phone or computer screen.
-    - Check for visible PII (Personally Identifiable Information): Real names, phone numbers, email addresses, or delivery locations.
+    - Screen Inspections (CRITICAL): Pause and zoom in on every shot featuring a phone screen.
+    - Check for visible PII (Names, Phone Numbers, Addresses).
     - Action: If found, strict instruction to BLUR.
     
     5. AUDIO & PACING
-    - Mix Levels: Ensure background music does not drown out the Voiceover (VO), especially during "reveal" or "cheering" moments.
+    - Mix Levels: Ensure background music does not drown out the Voiceover.
     - Lip Sync: Verify audio matches speaker mouth movement.
     
     Output Format:
@@ -152,10 +152,11 @@ with st.sidebar:
     st.header("⚙️ Model Configuration")
     
     if "available_models" not in st.session_state:
+        # UPDATED DEFAULT LIST: High Quota models first!
         st.session_state.available_models = [
-            "gemini-2.5-pro-preview-03-25", # High IQ
-            "gemini-2.5-flash",             # High Speed
-            "gemini-1.5-pro",
+            "gemini-2.5-pro-preview-03-25", # Recommended by Error Message
+            "gemini-2.5-flash",             # High Speed Alternative
+            "gemini-1.5-pro",               # Reliable Evergreen
             "gemini-1.5-flash",
             "gemini-2.0-flash-exp",
             "Custom Input"
@@ -175,7 +176,7 @@ with st.sidebar:
     selection = st.selectbox("Select AI Model", st.session_state.available_models, index=0)
     
     if selection == "Custom Input":
-        selected_model = st.text_input("Enter Model ID (e.g., gemini-3.0-pro)", "gemini-1.5-pro")
+        selected_model = st.text_input("Enter Model ID", "gemini-1.5-pro")
     else:
         selected_model = selection
         
@@ -236,11 +237,11 @@ with col2:
                     except Exception as e:
                         st.error(f"Analysis Error: {e}")
                         
-                        # Friendly Error Handling for 429
+                        # Friendly Error Handling
                         if "429" in str(e):
-                             st.error("⚠️ Rate Limit Exceeded: The selected model is busy. Please switch to 'gemini-2.5-flash' in the sidebar for higher quota.")
+                             st.error("⚠️ Rate Limit Exceeded: The selected model is busy. Please switch to 'gemini-2.5-flash' for higher quota.")
                         elif "404" in str(e):
-                             st.warning("⚠️ Model Not Found: Your API Key might not have access to this specific experimental model. Try 'gemini-1.5-flash'.")
+                             st.warning("⚠️ Model Not Found: Try 'gemini-1.5-flash' or check your API key access.")
 
     # Display Data
     if st.session_state.audit_df is not None and not st.session_state.audit_df.empty:
